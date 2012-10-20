@@ -13,39 +13,7 @@ require 'bigdecimal'
 # This represents the hard part of the work, all I did was change the
 # underlying parser.
 class REXMLUtilityNode #:nodoc:
-  attr_accessor :name, :attributes, :children, :type
-
-  def self.typecasts
-    @@typecasts
-  end
-
-  def self.typecasts=(obj)
-    @@typecasts = obj
-  end
-
-  def self.available_typecasts
-    @@available_typecasts
-  end
-
-  def self.available_typecasts=(obj)
-    @@available_typecasts = obj
-  end
-
-  self.typecasts = {}
-  self.typecasts["integer"]       = lambda{|v| v.nil? ? nil : v.to_i}
-  self.typecasts["boolean"]       = lambda{|v| v.nil? ? nil : (v.strip != "false")}
-  self.typecasts["datetime"]      = lambda{|v| v.nil? ? nil : Time.parse(v).utc}
-  self.typecasts["date"]          = lambda{|v| v.nil? ? nil : Date.parse(v)}
-  self.typecasts["dateTime"]      = lambda{|v| v.nil? ? nil : Time.parse(v).utc}
-  self.typecasts["decimal"]       = lambda{|v| v.nil? ? nil : BigDecimal(v.to_s)}
-  self.typecasts["double"]        = lambda{|v| v.nil? ? nil : v.to_f}
-  self.typecasts["float"]         = lambda{|v| v.nil? ? nil : v.to_f}
-  self.typecasts["symbol"]        = lambda{|v| v.nil? ? nil : v.to_sym}
-  self.typecasts["string"]        = lambda{|v| v.to_s}
-  self.typecasts["yaml"]          = lambda{|v| v.nil? ? nil : YAML.load(v)}
-  self.typecasts["base64Binary"]  = lambda{|v| v.unpack('m').first }
-
-  self.available_typecasts = self.typecasts.keys
+  attr_accessor :name, :attributes, :children
 
   def initialize(name, normalized_attributes = {})
 
@@ -55,9 +23,6 @@ class REXMLUtilityNode #:nodoc:
     }.flatten]
 
     @name         = name.tr("-", "_")
-    # leave the type alone if we don't know what it is
-    @type         = self.class.available_typecasts.include?(attributes["type"]) ? attributes.delete("type") : attributes["type"]
-
     @nil_element  = attributes.delete("nil") == "true"
     @attributes   = undasherize_keys(attributes)
     @children     = []
@@ -70,18 +35,8 @@ class REXMLUtilityNode #:nodoc:
   end
 
   def to_hash
-    if @type == "file"
-      f = StringIO.new((@children.first || '').unpack('m').first)
-      class << f
-        attr_accessor :original_filename, :content_type
-      end
-      f.original_filename = attributes['name'] || 'untitled'
-      f.content_type = attributes['content_type'] || 'application/octet-stream'
-      return {name => f}
-    end
-
     if @text
-      t = typecast_value( unnormalize_xml_entities( inner_html ) )
+      t = unnormalize_xml_entities( inner_html )
       if t.is_a?(String)
         class << t
           attr_accessor :attributes
@@ -93,66 +48,19 @@ class REXMLUtilityNode #:nodoc:
       #change repeating groups into an array
       groups = @children.inject({}) { |s,e| (s[e.name] ||= []) << e; s }
 
-      out = nil
-      if @type == "array"
-        out = []
-        groups.each do |k, v|
-          if v.size == 1
-            out << v.first.to_hash.entries.first.last
-          else
-            out << v.map{|e| e.to_hash[k]}
-          end
+      out = {}
+      groups.each do |k,v|
+        if v.size == 1
+          out.merge!(v.first)
+        else
+          out.merge!( k => v.map{|e| e.to_hash[k]})
         end
-        out = out.flatten
-
-      else # If Hash
-        out = {}
-        groups.each do |k,v|
-          if v.size == 1
-            out.merge!(v.first)
-          else
-            out.merge!( k => v.map{|e| e.to_hash[k]})
-          end
-        end
-        out.merge! attributes unless attributes.empty?
-        out = out.empty? ? nil : out
       end
+      out.merge! attributes unless attributes.empty?
+      out = out.empty? ? nil : out
 
-      if @type && out.nil?
-        { name => typecast_value(out) }
-      else
-        { name => out }
-      end
+      { name => out }
     end
-  end
-
-  # Typecasts a value based upon its type. For instance, if
-  # +node+ has #type == "integer",
-  # {{[node.typecast_value("12") #=> 12]}}
-  #
-  # @param value<String> The value that is being typecast.
-  #
-  # @details [:type options]
-  #   "integer"::
-  #     converts +value+ to an integer with #to_i
-  #   "boolean"::
-  #     checks whether +value+, after removing spaces, is the literal
-  #     "true"
-  #   "datetime"::
-  #     Parses +value+ using Time.parse, and returns a UTC Time
-  #   "date"::
-  #     Parses +value+ using Date.parse
-  #
-  # @return <Integer, TrueClass, FalseClass, Time, Date, Object>
-  #   The result of typecasting +value+.
-  #
-  # @note
-  #   If +self+ does not have a "type" key, or if it's not one of the
-  #   options specified above, the raw +value+ will be returned.
-  def typecast_value(value)
-    return value unless @type
-    proc = self.class.typecasts[@type]
-    proc.nil? ? value : proc.call(value)
   end
 
   # Take keys of the form foo-bar and convert them to foo_bar
@@ -172,7 +80,6 @@ class REXMLUtilityNode #:nodoc:
   #
   # @return <String> The HTML node in text form.
   def to_html
-    attributes.merge!(:type => @type ) if @type
     "<#{name}#{Crack::Util.to_xml_attributes(attributes)}>#{@nil_element ? '' : inner_html}</#{name}>"
   end
 
